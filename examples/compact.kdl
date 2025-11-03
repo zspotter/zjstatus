@@ -4,7 +4,7 @@ layout {
     }
 
     pane size=1 borderless=true {
-        plugin location="file:target/wasm32-wasi/debug/zjstatus.wasm" {
+        plugin location="file:target/wasm32-wasip1/debug/zjstatus.wasm" {
             format_left  "#[fg=#FFFFFF,bold] {session} {mode} {tabs}"
             format_right "#[bg=#8A8A8A,fg=#000000] #[bg=#8A8A8A,fg=#000000,bold]{swap_layout} #[bg=#000000,fg=#8A8A8A]"
 

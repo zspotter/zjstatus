@@ -193,9 +193,9 @@ The following widgets are available:
 
 ## 🚧 Development
 
-Make sure you have rust and the `wasm32-wasi` target installed. If using nix, you could utilize the nix-shell
+Make sure you have rust and the `wasm32-wasip1` target installed. If using nix, you could utilize the nix-shell
 in this repo for obtaining `cargo` and `rustup`. Then you'll only need to add the target with
-`rustup target add wasm32-wasi`.
+`rustup target add wasm32-wasip1`.
 
 With the toolchain, simply build `zjstatus` with `cargo build`. Then you are able to run the example configuration
 with `zellij -l plugin-dev-workspace.kdl` from the root of the repository.
