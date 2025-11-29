@@ -166,6 +166,7 @@ impl FormattedPart {
     pub fn format_string(&self, text: &str) -> String {
         let mut style = Style::new();
 
+        // TODO: resolve named colors here
         style = style.fg_color(self.fg);
         style = style.bg_color(self.bg);
         style = style.underline_color(self.us);
@@ -308,6 +309,7 @@ fn hex_to_rgb(s: &str) -> anyhow::Result<Vec<u8>> {
     convert = r#"{ (color.to_owned()) }"#
 )]
 fn parse_color(color: &str, config: &BTreeMap<String, String>) -> Option<Color> {
+    // TODO: return unresolved named colors here
     let mut color = color;
     if color.starts_with('$') {
         let alias_name = color.strip_prefix('$').unwrap();

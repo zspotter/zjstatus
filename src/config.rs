@@ -16,7 +16,7 @@ pub struct ZellijState {
     pub cols: usize,
     pub command_results: BTreeMap<String, CommandResult>,
     pub pipe_results: BTreeMap<String, String>,
-    pub mode: ModeInfo,
+    pub mode: ModeInfo, // TODO: make use of mode.style.colors
     pub panes: PaneManifest,
     pub plugin_uuid: String,
     pub tabs: Vec<TabInfo>,
