@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use anstyle::{Ansi256Color, AnsiColor, Color, RgbColor, Style};
 use regex::Regex;
-use zellij_tile::prelude::bail;
+use zellij_tile::prelude::{bail, PaletteColor, StyleDeclaration, Styling};
 
 use crate::{
     config::{event_mask_from_widget_name, UpdateEventMask, ZellijState},
@@ -15,11 +15,21 @@ lazy_static! {
     static ref WIDGET_REGEX: Regex = Regex::new("(\\{[a-z_0-9]+\\})").unwrap();
 }
 
+/// Represents a color that may need runtime resolution
+#[derive(Clone, Debug, PartialEq)]
+pub enum ColorSource {
+    /// Static color resolved at parse time (hex, RGB, named ANSI colors, user aliases)
+    Static(Color),
+    /// Zellij palette color resolved at render time from mode.style.colors
+    /// Examples: "text_selected.base", "ribbon_unselected.emphasis_1", "player_1"
+    Zellij(String),
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct FormattedPart {
-    pub fg: Option<Color>,
-    pub bg: Option<Color>,
-    pub us: Option<Color>,
+    pub fg: Option<ColorSource>,
+    pub bg: Option<ColorSource>,
+    pub us: Option<ColorSource>,
     pub effects: anstyle::Effects,
     pub bold: bool,
     pub italic: bool,
@@ -118,6 +128,17 @@ impl FormattedPart {
             result.parse_and_set_effect(part);
         }
 
+        // If any colors are Zellij colors, add Mode mask so they update when mode changes
+        let has_zellij_colors = [&result.fg, &result.bg, &result.us]
+            .iter()
+            .any(|color_opt| {
+                matches!(color_opt, Some(ColorSource::Zellij(_)))
+            });
+
+        if has_zellij_colors {
+            result.cache_mask |= UpdateEventMask::Mode as u8;
+        }
+
         result
     }
 
@@ -163,13 +184,28 @@ impl FormattedPart {
         }
     }
 
-    pub fn format_string(&self, text: &str) -> String {
+    pub fn format_string(&self, text: &str, state: &ZellijState) -> String {
         let mut style = Style::new();
 
-        // TODO: resolve named colors here
-        style = style.fg_color(self.fg);
-        style = style.bg_color(self.bg);
-        style = style.underline_color(self.us);
+        // Resolve colors at render time
+        if let Some(fg_source) = &self.fg {
+            if let Some(fg) = resolve_color_source(fg_source, state) {
+                style = style.fg_color(Some(fg));
+            }
+        }
+
+        if let Some(bg_source) = &self.bg {
+            if let Some(bg) = resolve_color_source(bg_source, state) {
+                style = style.bg_color(Some(bg));
+            }
+        }
+
+        if let Some(us_source) = &self.us {
+            if let Some(us) = resolve_color_source(us_source, state) {
+                style = style.underline_color(Some(us));
+            }
+        }
+
         style = style.effects(self.effects);
 
         format!(
@@ -238,7 +274,7 @@ impl FormattedPart {
             output = output.replace(match_name, &result);
         }
 
-        let res = self.format_string(&output);
+        let res = self.format_string(&output, state);
         self.cached_content.clone_from(&res);
 
         res
@@ -303,20 +339,79 @@ fn hex_to_rgb(s: &str) -> anyhow::Result<Vec<u8>> {
         .collect()
 }
 
+/// Checks if a color name matches Zellij's palette color naming patterns
+fn is_zellij_color_name(name: &str) -> bool {
+    // Check for player colors: "player_1" through "player_10"
+    if name.starts_with("player_") {
+        if let Some(num_str) = name.strip_prefix("player_") {
+            if let Ok(num) = num_str.parse::<u8>() {
+                return (1..=10).contains(&num);
+            }
+        }
+        return false;
+    }
+
+    // Check for StyleDeclaration colors: "category.field"
+    let parts: Vec<&str> = name.split('.').collect();
+    if parts.len() != 2 {
+        return false;
+    }
+
+    let category = parts[0];
+    let field = parts[1];
+
+    // Valid categories (StyleDeclaration fields in Styling struct)
+    let valid_categories = [
+        "text_unselected",
+        "text_selected",
+        "ribbon_unselected",
+        "ribbon_selected",
+        "table_title",
+        "table_cell_unselected",
+        "table_cell_selected",
+        "list_unselected",
+        "list_selected",
+        "frame_unselected",
+        "frame_selected",
+        "frame_highlight",
+        "exit_code_success",
+        "exit_code_error",
+    ];
+
+    // Valid fields (PaletteColor fields in StyleDeclaration)
+    let valid_fields = [
+        "base",
+        "background",
+        "emphasis_0",
+        "emphasis_1",
+        "emphasis_2",
+        "emphasis_3",
+    ];
+
+    valid_categories.contains(&category) && valid_fields.contains(&field)
+}
+
 #[cached(
-    ty = "SizedCache<String, Option<Color>>",
+    ty = "SizedCache<String, Option<ColorSource>>",
     create = "{ SizedCache::with_size(100) }",
     convert = r#"{ (color.to_owned()) }"#
 )]
-fn parse_color(color: &str, config: &BTreeMap<String, String>) -> Option<Color> {
-    // TODO: return unresolved named colors here
-    let mut color = color;
+fn parse_color(color: &str, config: &BTreeMap<String, String>) -> Option<ColorSource> {
+    // Handle user-defined aliases - resolve at parse time since config doesn't change
     if color.starts_with('$') {
         let alias_name = color.strip_prefix('$').unwrap();
-
-        color = config.get(&format!("color_{alias_name}"))?;
+        let alias_value = config.get(&format!("color_{}", alias_name))?;
+        // Recursively parse the alias value as a static color
+        return parse_static_color(alias_value).map(ColorSource::Static);
     }
 
+    // Check if this looks like a Zellij color name - keep dynamic for runtime resolution
+    // Patterns: "text_selected.base", "player_1", etc.
+    if is_zellij_color_name(color) {
+        return Some(ColorSource::Zellij(color.to_owned()));
+    }
+
+    // Parse static hex colors
     if color.starts_with('#') {
         let rgb = match hex_to_rgb(color.strip_prefix('#').unwrap()) {
             Ok(rgb) => rgb,
@@ -327,26 +422,29 @@ fn parse_color(color: &str, config: &BTreeMap<String, String>) -> Option<Color> 
             return None;
         }
 
-        return Some(
+        return Some(ColorSource::Static(
             RgbColor(
                 *rgb.first().unwrap(),
                 *rgb.get(1).unwrap(),
                 *rgb.get(2).unwrap(),
             )
             .into(),
-        );
+        ));
     }
 
-    if let Some(color) = color_by_name(color) {
-        return Some(color.into());
+    // Parse named ANSI colors
+    if let Some(ansi_color) = color_by_name(color) {
+        return Some(ColorSource::Static(ansi_color.into()));
     }
 
+    // Parse 256-color palette (with optional "colour" prefix)
+    let mut color_str = color;
     if color.starts_with("colour") {
-        color = color.strip_prefix("colour").unwrap();
+        color_str = color.strip_prefix("colour").unwrap();
     }
 
-    if let Ok(result) = color.parse::<u8>() {
-        return Some(Ansi256Color(result).into());
+    if let Ok(result) = color_str.parse::<u8>() {
+        return Some(ColorSource::Static(Ansi256Color(result).into()));
     }
 
     None
@@ -372,6 +470,119 @@ fn color_by_name(color: &str) -> Option<AnsiColor> {
         "bright_white" => Some(AnsiColor::BrightWhite),
         "default" => None,
         _ => None,
+    }
+}
+
+/// Resolves a ColorSource to an actual Color at render time
+fn resolve_color_source(source: &ColorSource, state: &ZellijState) -> Option<Color> {
+    match source {
+        ColorSource::Static(color) => Some(*color),
+        ColorSource::Zellij(name) => resolve_zellij_color(name, &state.mode.style.colors),
+    }
+}
+
+/// Parses a color string as a static color (no aliases or Zellij colors)
+fn parse_static_color(color: &str) -> Option<Color> {
+    // Parse hex colors
+    if color.starts_with('#') {
+        let rgb = hex_to_rgb(color.strip_prefix('#').unwrap()).ok()?;
+        if rgb.len() != 3 {
+            return None;
+        }
+        return Some(
+            RgbColor(*rgb.first()?, *rgb.get(1)?, *rgb.get(2)?).into(),
+        );
+    }
+
+    // Parse named ANSI colors
+    if let Some(ansi_color) = color_by_name(color) {
+        return Some(ansi_color.into());
+    }
+
+    // Parse 256-color palette
+    let mut color_str = color;
+    if color.starts_with("colour") {
+        color_str = color.strip_prefix("colour").unwrap();
+    }
+
+    if let Ok(result) = color_str.parse::<u8>() {
+        return Some(Ansi256Color(result).into());
+    }
+
+    None
+}
+
+/// Resolves a Zellij color name from the Styling palette
+fn resolve_zellij_color(name: &str, styling: &Styling) -> Option<Color> {
+    // Handle player colors
+    if name.starts_with("player_") {
+        let num_str = name.strip_prefix("player_")?;
+        let num = num_str.parse::<u8>().ok()?;
+        let palette_color = match num {
+            1 => styling.multiplayer_user_colors.player_1,
+            2 => styling.multiplayer_user_colors.player_2,
+            3 => styling.multiplayer_user_colors.player_3,
+            4 => styling.multiplayer_user_colors.player_4,
+            5 => styling.multiplayer_user_colors.player_5,
+            6 => styling.multiplayer_user_colors.player_6,
+            7 => styling.multiplayer_user_colors.player_7,
+            8 => styling.multiplayer_user_colors.player_8,
+            9 => styling.multiplayer_user_colors.player_9,
+            10 => styling.multiplayer_user_colors.player_10,
+            _ => return None,
+        };
+        return Some(palette_color_to_anstyle(palette_color));
+    }
+
+    // Handle StyleDeclaration colors
+    let parts: Vec<&str> = name.split('.').collect();
+    if parts.len() != 2 {
+        return None;
+    }
+
+    let category = parts[0];
+    let field = parts[1];
+
+    let style_decl = match category {
+        "text_unselected" => &styling.text_unselected,
+        "text_selected" => &styling.text_selected,
+        "ribbon_unselected" => &styling.ribbon_unselected,
+        "ribbon_selected" => &styling.ribbon_selected,
+        "table_title" => &styling.table_title,
+        "table_cell_unselected" => &styling.table_cell_unselected,
+        "table_cell_selected" => &styling.table_cell_selected,
+        "list_unselected" => &styling.list_unselected,
+        "list_selected" => &styling.list_selected,
+        "frame_unselected" => styling.frame_unselected.as_ref()?,
+        "frame_selected" => &styling.frame_selected,
+        "frame_highlight" => &styling.frame_highlight,
+        "exit_code_success" => &styling.exit_code_success,
+        "exit_code_error" => &styling.exit_code_error,
+        _ => return None,
+    };
+
+    let palette_color = get_style_field(style_decl, field)?;
+    Some(palette_color_to_anstyle(palette_color))
+}
+
+/// Extracts a specific field from a StyleDeclaration
+fn get_style_field(style: &StyleDeclaration, field: &str) -> Option<PaletteColor> {
+    match field {
+        "base" => Some(style.base),
+        "background" => Some(style.background),
+        "emphasis_0" => Some(style.emphasis_0),
+        "emphasis_1" => Some(style.emphasis_1),
+        "emphasis_2" => Some(style.emphasis_2),
+        "emphasis_3" => Some(style.emphasis_3),
+        _ => None,
+    }
+}
+
+/// Converts a Zellij PaletteColor to an anstyle Color
+fn palette_color_to_anstyle(palette_color: PaletteColor) -> Color {
+    match palette_color {
+        PaletteColor::Rgb((r, g, b)) => RgbColor(r, g, b).into(),
+        PaletteColor::EightBit(n) => Ansi256Color(n).into(),
     }
 }
 

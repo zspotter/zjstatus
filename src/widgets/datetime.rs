@@ -101,7 +101,7 @@ impl Widget for DateTimeWidget {
                 (f, content)
             })
             .fold("".to_owned(), |acc, (f, content)| {
-                format!("{acc}{}", f.format_string(&content))
+                format!("{acc}{}", f.format_string(&content, _state))
             })
     }
 
