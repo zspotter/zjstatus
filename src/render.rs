@@ -401,8 +401,9 @@ fn parse_color(color: &str, config: &BTreeMap<String, String>) -> Option<ColorSo
     if color.starts_with('$') {
         let alias_name = color.strip_prefix('$').unwrap();
         let alias_value = config.get(&format!("color_{}", alias_name))?;
-        // Recursively parse the alias value as a static color
-        return parse_static_color(alias_value).map(ColorSource::Static);
+        // Recursively parse the alias value, but with empty config to prevent infinite alias loops
+        // This allows aliases to point to hex colors, named colors, or Zellij colors
+        return parse_color(alias_value.trim(), &BTreeMap::new());
     }
 
     // Check if this looks like a Zellij color name - keep dynamic for runtime resolution
@@ -481,37 +482,6 @@ fn resolve_color_source(source: &ColorSource, state: &ZellijState) -> Option<Col
     }
 }
 
-/// Parses a color string as a static color (no aliases or Zellij colors)
-fn parse_static_color(color: &str) -> Option<Color> {
-    // Parse hex colors
-    if color.starts_with('#') {
-        let rgb = hex_to_rgb(color.strip_prefix('#').unwrap()).ok()?;
-        if rgb.len() != 3 {
-            return None;
-        }
-        return Some(
-            RgbColor(*rgb.first()?, *rgb.get(1)?, *rgb.get(2)?).into(),
-        );
-    }
-
-    // Parse named ANSI colors
-    if let Some(ansi_color) = color_by_name(color) {
-        return Some(ansi_color.into());
-    }
-
-    // Parse 256-color palette
-    let mut color_str = color;
-    if color.starts_with("colour") {
-        color_str = color.strip_prefix("colour").unwrap();
-    }
-
-    if let Ok(result) = color_str.parse::<u8>() {
-        return Some(Ansi256Color(result).into());
-    }
-
-    None
-}
-
 /// Resolves a Zellij color name from the Styling palette
 fn resolve_zellij_color(name: &str, styling: &Styling) -> Option<Color> {
     // Handle player colors
@@ -542,6 +512,21 @@ fn resolve_zellij_color(name: &str, styling: &Styling) -> Option<Color> {
 
     let category = parts[0];
     let field = parts[1];
+
+    // Handle frame_unselected specially since it's optional
+    if category == "frame_unselected" && styling.frame_unselected.is_none() {
+        // Provide default colors when frame_unselected is None
+        let default_color = match field {
+            "base" => PaletteColor::Rgb((255, 255, 255)), // white
+            "background" => PaletteColor::Rgb((0, 0, 0)), // black
+            "emphasis_0" => PaletteColor::Rgb((255, 255, 255)), // white
+            "emphasis_1" => PaletteColor::Rgb((255, 255, 255)), // white
+            "emphasis_2" => PaletteColor::Rgb((255, 255, 255)), // white
+            "emphasis_3" => PaletteColor::Rgb((255, 255, 255)), // white
+            _ => return None,
+        };
+        return Some(palette_color_to_anstyle(default_color));
+    }
 
     let style_decl = match category {
         "text_unselected" => &styling.text_unselected,
