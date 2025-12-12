@@ -63,6 +63,7 @@ impl ZellijPlugin for State {
             PermissionType::ReadApplicationState,
             PermissionType::ChangeApplicationState,
             PermissionType::RunCommands,
+            PermissionType::Reconfigure,
         ]);
 
         subscribe(&[
@@ -290,7 +291,18 @@ impl State {
                 tracing::debug!(tab_count = ?tab_info.len());
 
                 self.state.cache_mask = UpdateEventMask::Tab as u8;
+
+                let prev_active_index = self.state.tabs.iter().position(|t| t.active);
+                let active_index = tab_info.iter().position(|t| t.active);
                 self.state.tabs = tab_info;
+
+                if active_index != prev_active_index {
+                    if let Some(index) = active_index {
+                        // TODO: dynamically modify theme instead of hard coding
+                        let config = format!("theme \"ansi-styled-{}\"", index);
+                        reconfigure(config, false);
+                    }
+                }
 
                 should_render = true;
             }
