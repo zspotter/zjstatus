@@ -471,7 +471,13 @@ impl ModuleConfig {
     }
 
     #[tracing::instrument(skip_all)]
-    fn get_spacer_left(&self, output_left: &str, output_center: &str, cols: usize, state: &ZellijState) -> String {
+    fn get_spacer_left(
+        &self,
+        output_left: &str,
+        output_center: &str,
+        cols: usize,
+        state: &ZellijState,
+    ) -> String {
         let text_count = console::measure_text_width(output_left)
             + (console::measure_text_width(output_center) as f32 / 2.0).floor() as usize;
 
@@ -482,11 +488,18 @@ impl ModuleConfig {
         let space_count = center_pos.saturating_sub(text_count);
 
         tracing::debug!("space_count: {:?}", space_count);
-        self.format_space.format_string(&" ".repeat(space_count), state)
+        self.format_space
+            .format_string(&" ".repeat(space_count), state)
     }
 
     #[tracing::instrument(skip_all)]
-    fn get_spacer_right(&self, output_right: &str, output_center: &str, cols: usize, state: &ZellijState) -> String {
+    fn get_spacer_right(
+        &self,
+        output_right: &str,
+        output_center: &str,
+        cols: usize,
+        state: &ZellijState,
+    ) -> String {
         let text_count = console::measure_text_width(output_right)
             + (console::measure_text_width(output_center) as f32 / 2.0).ceil() as usize;
 
@@ -497,10 +510,17 @@ impl ModuleConfig {
         let space_count = center_pos.saturating_sub(text_count);
 
         tracing::debug!("space_count: {:?}", space_count);
-        self.format_space.format_string(&" ".repeat(space_count), state)
+        self.format_space
+            .format_string(&" ".repeat(space_count), state)
     }
 
-    fn get_spacer(&self, output_left: &str, output_right: &str, cols: usize, state: &ZellijState) -> String {
+    fn get_spacer(
+        &self,
+        output_left: &str,
+        output_right: &str,
+        cols: usize,
+        state: &ZellijState,
+    ) -> String {
         let text_count =
             console::measure_text_width(output_left) + console::measure_text_width(output_right);
 
@@ -508,7 +528,8 @@ impl ModuleConfig {
         // count of 0 on tab creation
         let space_count = cols.saturating_sub(text_count);
 
-        self.format_space.format_string(&" ".repeat(space_count), state)
+        self.format_space
+            .format_string(&" ".repeat(space_count), state)
     }
 }
 

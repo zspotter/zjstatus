@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use anstyle::{Ansi256Color, AnsiColor, Color, RgbColor, Style};
 use regex::Regex;
-use zellij_tile::prelude::{bail, PaletteColor, StyleDeclaration, Styling};
+use zellij_tile::prelude::{PaletteColor, StyleDeclaration, Styling, bail};
 
 use crate::{
     config::{UpdateEventMask, ZellijState, event_mask_from_widget_name},
@@ -131,9 +131,7 @@ impl FormattedPart {
         // If any colors are Zellij colors, add Mode mask so they update when mode changes
         let has_zellij_colors = [&result.fg, &result.bg, &result.us]
             .iter()
-            .any(|color_opt| {
-                matches!(color_opt, Some(ColorSource::Zellij(_)))
-            });
+            .any(|color_opt| matches!(color_opt, Some(ColorSource::Zellij(_))));
 
         if has_zellij_colors {
             result.cache_mask |= UpdateEventMask::Mode as u8;
@@ -204,7 +202,6 @@ impl FormattedPart {
         {
             style = style.underline_color(Some(us));
         }
-
 
         style = style.effects(self.effects);
 
@@ -340,56 +337,60 @@ fn hex_to_rgb(s: &str) -> anyhow::Result<Vec<u8>> {
         .collect()
 }
 
-/// Checks if a color name matches Zellij's palette color naming patterns
+/// Parses `player_N` into `N` if `N` is a valid Zellij player index (1..=10).
+fn parse_player_index(name: &str) -> Option<u8> {
+    let num: u8 = name.strip_prefix("player_")?.parse().ok()?;
+    (1..=10).contains(&num).then_some(num)
+}
+
+/// Looks up the [`StyleDeclaration`] for a Zellij style category name. Returns:
+/// - `Some(Some(&decl))` when the category is recognized and present in the palette.
+/// - `Some(None)` for `frame_unselected` when the palette omits it (Zellij treats this
+///   as "no frame for unselected panes"; resolving a color against it yields `None`).
+/// - `None` when the category is not a recognized Zellij category at all.
+fn style_declaration_for_category<'a>(
+    styling: &'a Styling,
+    category: &str,
+) -> Option<Option<&'a StyleDeclaration>> {
+    Some(Some(match category {
+        "text_unselected" => &styling.text_unselected,
+        "text_selected" => &styling.text_selected,
+        "ribbon_unselected" => &styling.ribbon_unselected,
+        "ribbon_selected" => &styling.ribbon_selected,
+        "table_title" => &styling.table_title,
+        "table_cell_unselected" => &styling.table_cell_unselected,
+        "table_cell_selected" => &styling.table_cell_selected,
+        "list_unselected" => &styling.list_unselected,
+        "list_selected" => &styling.list_selected,
+        "frame_unselected" => return Some(styling.frame_unselected.as_ref()),
+        "frame_selected" => &styling.frame_selected,
+        "frame_highlight" => &styling.frame_highlight,
+        "exit_code_success" => &styling.exit_code_success,
+        "exit_code_error" => &styling.exit_code_error,
+        _ => return None,
+    }))
+}
+
+const STYLE_FIELDS: &[&str] = &[
+    "base",
+    "background",
+    "emphasis_0",
+    "emphasis_1",
+    "emphasis_2",
+    "emphasis_3",
+];
+
+/// Checks if a color name matches Zellij's palette naming patterns:
+/// `category.field` for [`StyleDeclaration`] colors, or `player_N` for multiplayer colors.
 fn is_zellij_color_name(name: &str) -> bool {
-    // Check for player colors: "player_1" through "player_10"
-    if name.starts_with("player_") {
-        if let Some(num_str) = name.strip_prefix("player_")
-            && let Ok(num) = num_str.parse::<u8>()
-        {
-            return (1..=10).contains(&num);
-        }
-        return false;
+    if parse_player_index(name).is_some() {
+        return true;
     }
-
-    // Check for StyleDeclaration colors: "category.field"
-    let parts: Vec<&str> = name.split('.').collect();
-    if parts.len() != 2 {
+    let Some((category, field)) = name.split_once('.') else {
         return false;
-    }
-
-    let category = parts[0];
-    let field = parts[1];
-
-    // Valid categories (StyleDeclaration fields in Styling struct)
-    let valid_categories = [
-        "text_unselected",
-        "text_selected",
-        "ribbon_unselected",
-        "ribbon_selected",
-        "table_title",
-        "table_cell_unselected",
-        "table_cell_selected",
-        "list_unselected",
-        "list_selected",
-        "frame_unselected",
-        "frame_selected",
-        "frame_highlight",
-        "exit_code_success",
-        "exit_code_error",
-    ];
-
-    // Valid fields (PaletteColor fields in StyleDeclaration)
-    let valid_fields = [
-        "base",
-        "background",
-        "emphasis_0",
-        "emphasis_1",
-        "emphasis_2",
-        "emphasis_3",
-    ];
-
-    valid_categories.contains(&category) && valid_fields.contains(&field)
+    };
+    style_declaration_for_category(&Styling::default(), category).is_some()
+        && STYLE_FIELDS.contains(&field)
 }
 
 #[cached(
@@ -401,9 +402,10 @@ fn parse_color(color: &str, config: &BTreeMap<String, String>) -> Option<ColorSo
     if color.starts_with('$') {
         let alias_name = color.strip_prefix('$').unwrap();
         let alias_value = config.get(&format!("color_{}", alias_name))?;
-        // Recursively parse the alias value, but with empty config to prevent infinite alias loops
-        // This allows aliases to point to hex colors, named colors, or Zellij colors
-        return parse_color(alias_value.trim(), &BTreeMap::new());
+        // Single-level alias resolution: nested `$alias` references are not supported,
+        // so recurse with an empty config. The aliased value can still be a hex color,
+        // a named color, or a Zellij palette reference.
+        return parse_color(alias_value, &BTreeMap::new());
     }
 
     // Check if this looks like a Zellij color name - keep dynamic for runtime resolution
@@ -482,13 +484,12 @@ fn resolve_color_source(source: &ColorSource, state: &ZellijState) -> Option<Col
     }
 }
 
-/// Resolves a Zellij color name from the Styling palette
+/// Resolves a Zellij color name against the current palette. Returns `None` when the
+/// name is unrecognized or the referenced palette slot is absent (e.g. `frame_unselected`
+/// when the theme omits it); the caller then leaves the corresponding fg/bg/us unset.
 fn resolve_zellij_color(name: &str, styling: &Styling) -> Option<Color> {
-    // Handle player colors
-    if name.starts_with("player_") {
-        let num_str = name.strip_prefix("player_")?;
-        let num = num_str.parse::<u8>().ok()?;
-        let palette_color = match num {
+    if let Some(n) = parse_player_index(name) {
+        let palette_color = match n {
             1 => styling.multiplayer_user_colors.player_1,
             2 => styling.multiplayer_user_colors.player_2,
             3 => styling.multiplayer_user_colors.player_3,
@@ -504,48 +505,8 @@ fn resolve_zellij_color(name: &str, styling: &Styling) -> Option<Color> {
         return Some(palette_color_to_anstyle(palette_color));
     }
 
-    // Handle StyleDeclaration colors
-    let parts: Vec<&str> = name.split('.').collect();
-    if parts.len() != 2 {
-        return None;
-    }
-
-    let category = parts[0];
-    let field = parts[1];
-
-    // Handle frame_unselected specially since it's optional
-    if category == "frame_unselected" && styling.frame_unselected.is_none() {
-        // Provide default colors when frame_unselected is None
-        let default_color = match field {
-            "base" => PaletteColor::Rgb((255, 255, 255)), // white
-            "background" => PaletteColor::Rgb((0, 0, 0)), // black
-            "emphasis_0" => PaletteColor::Rgb((255, 255, 255)), // white
-            "emphasis_1" => PaletteColor::Rgb((255, 255, 255)), // white
-            "emphasis_2" => PaletteColor::Rgb((255, 255, 255)), // white
-            "emphasis_3" => PaletteColor::Rgb((255, 255, 255)), // white
-            _ => return None,
-        };
-        return Some(palette_color_to_anstyle(default_color));
-    }
-
-    let style_decl = match category {
-        "text_unselected" => &styling.text_unselected,
-        "text_selected" => &styling.text_selected,
-        "ribbon_unselected" => &styling.ribbon_unselected,
-        "ribbon_selected" => &styling.ribbon_selected,
-        "table_title" => &styling.table_title,
-        "table_cell_unselected" => &styling.table_cell_unselected,
-        "table_cell_selected" => &styling.table_cell_selected,
-        "list_unselected" => &styling.list_unselected,
-        "list_selected" => &styling.list_selected,
-        "frame_unselected" => styling.frame_unselected.as_ref()?,
-        "frame_selected" => &styling.frame_selected,
-        "frame_highlight" => &styling.frame_highlight,
-        "exit_code_success" => &styling.exit_code_success,
-        "exit_code_error" => &styling.exit_code_error,
-        _ => return None,
-    };
-
+    let (category, field) = name.split_once('.')?;
+    let style_decl = style_declaration_for_category(styling, category)??;
     let palette_color = get_style_field(style_decl, field)?;
     Some(palette_color_to_anstyle(palette_color))
 }
@@ -718,21 +679,39 @@ mod test {
     }
 
     #[test]
-    fn test_resolve_zellij_color_frame_unselected_default() {
+    fn test_resolve_zellij_color_frame_unselected_absent() {
+        // Zellij treats `frame_unselected = None` as "no frame for unselected panes";
+        // resolving a color against it yields None and the caller leaves fg/bg/us unset.
         let styling = Styling {
             frame_unselected: None,
             ..Styling::default()
         };
-
-        // With frame_unselected = None, base falls back to white
         assert_eq!(
             resolve_zellij_color("frame_unselected.base", &styling),
-            Some(RgbColor(255, 255, 255).into())
+            None
         );
-        // background falls back to black
         assert_eq!(
             resolve_zellij_color("frame_unselected.background", &styling),
-            Some(RgbColor(0, 0, 0).into())
+            None
+        );
+
+        // But `frame_unselected.base` is still considered a valid name at parse time,
+        // so we don't fall through to other parsers.
+        assert!(is_zellij_color_name("frame_unselected.base"));
+    }
+
+    #[test]
+    fn test_resolve_zellij_color_frame_unselected_present() {
+        let styling = Styling {
+            frame_unselected: Some(StyleDeclaration {
+                base: PaletteColor::Rgb((5, 5, 5)),
+                ..StyleDeclaration::default()
+            }),
+            ..Styling::default()
+        };
+        assert_eq!(
+            resolve_zellij_color("frame_unselected.base", &styling),
+            Some(RgbColor(5, 5, 5).into())
         );
     }
 
@@ -740,8 +719,7 @@ mod test {
     fn test_cache_mask_includes_mode_for_zellij_colors() {
         let config: BTreeMap<String, String> = BTreeMap::new();
 
-        let zellij_part =
-            FormattedPart::from_format_string("#[fg=text_selected.base]hi", &config);
+        let zellij_part = FormattedPart::from_format_string("#[fg=text_selected.base]hi", &config);
         assert!(
             zellij_part.cache_mask & UpdateEventMask::Mode as u8 != 0,
             "FormattedPart with a Zellij color should set the Mode cache mask"

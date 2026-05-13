@@ -195,8 +195,11 @@ impl Widget for TabsWidget {
             if counter < tabs.len()
                 && let Some(sep) = &self.separator
             {
-                rendered_content =
-                    format!("{}{}", rendered_content, sep.format_string(&sep.content, state));
+                rendered_content = format!(
+                    "{}{}",
+                    rendered_content,
+                    sep.format_string(&sep.content, state)
+                );
             }
 
             let content_len = console::measure_text_width(&rendered_content);
@@ -285,8 +288,12 @@ impl TabsWidget {
             }
 
             if content.contains("{floating_total_count}") {
-                let panes_for_tab: Vec<PaneInfo> =
-                    state.panes.panes.get(&tab.position).cloned().unwrap_or_default();
+                let panes_for_tab: Vec<PaneInfo> = state
+                    .panes
+                    .panes
+                    .get(&tab.position)
+                    .cloned()
+                    .unwrap_or_default();
 
                 content = content.replace(
                     "{floating_total_count}",
